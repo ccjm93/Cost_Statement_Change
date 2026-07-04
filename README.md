@@ -1,11 +1,13 @@
-# 설계변경 내역서 자동화 프로그램
+# Cost_Statement_Change
+
+설계변경 내역서 자동화 프로그램
 
 설계변경 내역서 `.xlsx` 파일에서 금액 수식이 있는 데이터 행을 `당초/변경` 쌍으로 자동 변환하는 Python GUI 프로그램입니다.
 
 ## 실행
 
 ```cmd
-python app.py
+D:\Coding\Cost_Statement_Change\run_app.bat
 ```
 
 화면에서 엑셀 파일을 선택한 뒤 처리할 시트와 `당초/변경` 열을 삽입할 위치를 선택하고 `자동화 실행`을 누르면 됩니다.
