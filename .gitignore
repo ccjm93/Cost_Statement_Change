@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.omc/
+*.xlsx
+~$*.xlsx
+*_설계변경자동화.xlsx
