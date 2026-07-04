@@ -46,6 +46,16 @@ class ProcessorTest(unittest.TestCase):
                 self.assertEqual(ws["F4"].value, "=C4+D4+E4")
                 self.assertEqual(ws["F6"].value, "=C6+D6+E6")
                 self.assertEqual(ws["F8"].value, "=C8+D8+E8")
+                # 변경 행: 같은 시트에서 당초 행을 가리키는 참조는 한 행 아래(변경 행)로 옮긴다.
+                self.assertEqual(ws["C8"].value, "=SUM(C4,C6)")
+                self.assertEqual(ws["D8"].value, "=SUM(D4,D6)")
+                # 변경 행: 다른 시트 참조는 당초 행과 동일하게 유지한다.
+                self.assertEqual(ws["G3"].value, "=참조!B1")
+                self.assertEqual(ws["G4"].value, "=참조!B1")
+                # 데이터 행 밖의 수식도 열/행 삽입에 맞게 보정된다. (원본 F6 -> G9)
+                self.assertEqual(ws["G9"].value, "=F7")
+                # 다른 시트에서 내역서를 참조하는 수식도 보정된다.
+                self.assertEqual(workbook["참조"]["A1"].value, "=내역서!F3")
                 self.assertEqual(ws["A1"].value, "공사 내역")
                 self.assertIn("A1:G1", {str(range_) for range_ in ws.merged_cells.ranges})
                 self.assertEqual(ws["A1"].fill.fgColor.rgb, "FF1F4E78")
@@ -96,6 +106,11 @@ class ProcessorTest(unittest.TestCase):
         ws.append(["터파기", 100, 200, 30, "=B3+C3+D3", ""])
         ws.append(["되메우기", 120, 220, 40, "=B4+C4+D4", ""])
         ws.append(["소계", "=SUM(B3:B4)", "=SUM(C3:C4)", "=SUM(D3:D4)", "=SUM(E3:E4)", ""])
+        ws["F3"] = "=참조!B1"  # 데이터 행의 다른 시트 참조 수식
+        ws["F6"] = "=E5"  # 데이터 행 밖의 수식 (금액 열 수식 없음)
+        ref_sheet = wb.create_sheet("참조")
+        ref_sheet["A1"] = "=내역서!E3"
+        ref_sheet["B1"] = 7
         wb.save(path)
         wb.close()
 

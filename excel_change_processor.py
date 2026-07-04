@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
-from openpyxl.formula.translate import Translator
 from openpyxl.styles import Font
 from openpyxl.utils import column_index_from_string, get_column_letter
 
@@ -96,7 +95,7 @@ def process_workbook(
         if insert_before_col > worksheet.max_column + 1:
             raise ValueError("선택한 삽입 위치가 시트 범위를 벗어났습니다.")
         data_rows = _formula_rows(worksheet, detected_columns["amount"], header_row)
-        original_formula_rows = _snapshot_row_formulas(worksheet, data_rows)
+        original_formulas = _snapshot_all_formulas(worksheet)
         ref_mapper = _FormulaRefMapper(data_rows, insert_before_col)
 
         _unmerge_ranges(worksheet, original_merged_ranges)
@@ -120,21 +119,34 @@ def process_workbook(
             row_idx = original_row + offset
             change_row_idx = row_idx + 1
             worksheet.insert_rows(change_row_idx)
-            _restore_row_formulas(
-                worksheet,
-                row_idx,
-                original_formula_rows[original_row],
-                ref_mapper,
-            )
             _copy_row(worksheet, row_idx, change_row_idx)
 
             worksheet.cell(row_idx, insert_before_col).value = ORIGINAL_LABEL
             worksheet.cell(change_row_idx, insert_before_col).value = CHANGED_LABEL
             _apply_red_font(worksheet, change_row_idx)
-            _set_amount_formula(worksheet, change_row_idx, shifted_columns)
 
             processed_original_rows.append(row_idx)
             offset += 1
+
+        data_row_set = set(data_rows)
+        original_positions = {ref_mapper.map_row(row) for row in data_rows}
+        for (row, col), formula in original_formulas.items():
+            target_row = ref_mapper.map_row(row)
+            target_col = ref_mapper.map_col(col)
+            rewritten = _rewrite_same_sheet_formula(formula, ref_mapper)
+            worksheet.cell(target_row, target_col).value = rewritten
+            if row in data_row_set:
+                # 변경 행 수식: 다른 시트 참조는 당초 행과 동일하게 두고,
+                # 같은 시트에서 당초 행을 가리키는 참조만 한 행 아래(변경 행)로 옮긴다.
+                # (금액 열은 아래에서 재설정)
+                worksheet.cell(target_row + 1, target_col).value = _shift_change_row_formula(
+                    rewritten, original_positions
+                )
+
+        for row_idx in processed_original_rows:
+            _set_amount_formula(worksheet, row_idx + 1, shifted_columns)
+
+        _rewrite_cross_sheet_references(workbook, sheet_name, ref_mapper)
 
         validation = validate_workbook(
             worksheet=worksheet,
@@ -226,6 +238,8 @@ def validate_workbook(
     original_merged_ranges: Iterable[str],
 ) -> list[str]:
     errors: list[str] = []
+    original_rows = list(original_rows)
+    original_positions = set(original_rows)
     if worksheet.cell(header_row, insert_col).value != CHANGE_HEADER:
         errors.append("당초/변경 헤더가 없습니다.")
 
@@ -241,6 +255,16 @@ def validate_workbook(
         expected = _amount_formula(change_row_idx, columns)
         if worksheet.cell(change_row_idx, columns["amount"]).value != expected:
             errors.append(f"{change_row_idx}행 금액 수식 오류")
+
+        for col in range(1, worksheet.max_column + 1):
+            if col in (insert_col, columns["amount"]):
+                continue
+            original_value = worksheet.cell(row_idx, col).value
+            if not (isinstance(original_value, str) and original_value.startswith("=")):
+                continue
+            expected_formula = _shift_change_row_formula(original_value, original_positions)
+            if worksheet.cell(change_row_idx, col).value != expected_formula:
+                errors.append(f"{change_row_idx}행 {get_column_letter(col)}열 수식이 변경 행 규칙과 다릅니다")
 
     shifted_ranges = set(_shift_merged_ranges_after_col_insert(original_merged_ranges, insert_col))
     current_ranges = {str(range_) for range_ in worksheet.merged_cells.ranges}
@@ -338,27 +362,14 @@ def _formula_rows(worksheet, amount_col: int, header_row: int) -> list[int]:
     return rows
 
 
-def _snapshot_row_formulas(worksheet, rows: Iterable[int]) -> dict[int, dict[int, str]]:
-    snapshots: dict[int, dict[int, str]] = {}
-    for row in rows:
-        formulas: dict[int, str] = {}
-        for col in range(1, worksheet.max_column + 1):
-            value = worksheet.cell(row, col).value
+def _snapshot_all_formulas(worksheet) -> dict[tuple[int, int], str]:
+    formulas: dict[tuple[int, int], str] = {}
+    for row in worksheet.iter_rows():
+        for cell in row:
+            value = cell.value
             if isinstance(value, str) and value.startswith("="):
-                formulas[col] = value
-        snapshots[row] = formulas
-    return snapshots
-
-
-def _restore_row_formulas(
-    worksheet,
-    row: int,
-    formulas: dict[int, str],
-    ref_mapper: "_FormulaRefMapper",
-) -> None:
-    for col, formula in formulas.items():
-        mapped_col = ref_mapper.map_col(col)
-        worksheet.cell(row, mapped_col).value = _rewrite_same_sheet_formula(formula, ref_mapper)
+                formulas[(cell.row, cell.column)] = value
+    return formulas
 
 
 class _FormulaRefMapper:
@@ -386,6 +397,9 @@ class _FormulaRefMapper:
 _CELL_TOKEN = r"(\$?[A-Z]{1,3})(\$?)(\d+)"
 _RANGE_RE = re.compile(rf"(?<!!){_CELL_TOKEN}:{_CELL_TOKEN}")
 _CELL_RE = re.compile(rf"(?<!!){_CELL_TOKEN}")
+_SHEET_REF_RE = re.compile(
+    r"(?:'[^']+'|[A-Za-z0-9_\.\-ㄱ-힝]+)!\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?"
+)
 
 
 def _rewrite_same_sheet_formula(formula: str, ref_mapper: _FormulaRefMapper) -> str:
@@ -400,7 +414,7 @@ def _rewrite_same_sheet_formula(formula: str, ref_mapper: _FormulaRefMapper) -> 
         rewritten_ranges.append(value)
         return f"__RANGE_REF_{len(rewritten_ranges) - 1}__"
 
-    formula = re.sub(r"(?:'[^']+'|[A-Za-z0-9_\.\-\u3131-\uD79D]+)!\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?", protect, formula)
+    formula = _SHEET_REF_RE.sub(protect, formula)
 
     def replace_range(match: re.Match[str]) -> str:
         start_col, start_abs, start_row_text, end_col, end_abs, end_row_text = match.groups()
@@ -436,6 +450,68 @@ def _rewrite_same_sheet_formula(formula: str, ref_mapper: _FormulaRefMapper) -> 
     return formula
 
 
+def _shift_change_row_formula(formula: str, original_row_positions: set[int]) -> str:
+    """변경 행 수식을 만든다.
+
+    - 다른 시트 참조: 당초 행과 동일하게 유지한다.
+    - 같은 시트 참조: 당초 행(변경 행 짝이 있는 행)을 가리키는 참조만 한 행 아래로 옮긴다.
+      (당초 행이 'A5'를 참조하면 변경 행은 'A6'을 참조)
+    """
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"__SHEET_REF_{len(protected) - 1}__"
+
+    result = _SHEET_REF_RE.sub(protect, formula)
+
+    def shift(match: re.Match[str]) -> str:
+        col_token, row_abs, row_text = match.groups()
+        row = int(row_text)
+        if row in original_row_positions:
+            row += 1
+        return f"{col_token}{row_abs}{row}"
+
+    result = _CELL_RE.sub(shift, result)
+
+    for index, value in enumerate(protected):
+        result = result.replace(f"__SHEET_REF_{index}__", value)
+    return result
+
+
+def _rewrite_cross_sheet_references(workbook, sheet_name: str, ref_mapper: _FormulaRefMapper) -> None:
+    """다른 시트의 수식이 처리 대상 시트를 참조하면 열/행 삽입에 맞게 참조를 보정한다."""
+    quoted = re.escape(f"'{sheet_name}'")
+    bare = re.escape(sheet_name)
+    pattern = re.compile(
+        rf"(?<![\w.ㄱ-힣'])({quoted}|{bare})!(\$?[A-Z]{{1,3}}\$?\d+)(?::(\$?[A-Z]{{1,3}}\$?\d+))?"
+    )
+    cell_re = re.compile(r"(\$?[A-Z]{1,3})(\$?)(\d+)")
+
+    def map_ref(ref: str) -> str:
+        col_token, row_abs, row_text = cell_re.fullmatch(ref).groups()
+        return f"{ref_mapper.map_col_token(col_token)}{row_abs}{ref_mapper.map_row(int(row_text))}"
+
+    def replace(match: re.Match[str]) -> str:
+        sheet_part, start, end = match.groups()
+        mapped = f"{sheet_part}!{map_ref(start)}"
+        if end:
+            mapped += f":{map_ref(end)}"
+        return mapped
+
+    for name in workbook.sheetnames:
+        if name == sheet_name:
+            continue
+        other = workbook[name]
+        for row in other.iter_rows():
+            for cell in row:
+                value = cell.value
+                if isinstance(value, str) and value.startswith("=") and sheet_name in value:
+                    rewritten = pattern.sub(replace, value)
+                    if rewritten != value:
+                        cell.value = rewritten
+
+
 def _copy_row(worksheet, source_row: int, target_row: int) -> None:
     worksheet.row_dimensions[target_row].height = worksheet.row_dimensions[source_row].height
     for col in range(1, worksheet.max_column + 1):
@@ -443,19 +519,12 @@ def _copy_row(worksheet, source_row: int, target_row: int) -> None:
         target = worksheet.cell(target_row, col)
         if isinstance(source, MergedCell):
             continue
-        target.value = _translated_value(source, target)
+        target.value = source.value
         _copy_cell_style(source, target)
         if source.hyperlink:
             target._hyperlink = copy(source.hyperlink)
         if source.comment:
             target.comment = copy(source.comment)
-
-
-def _translated_value(source: Cell, target: Cell):
-    value = source.value
-    if isinstance(value, str) and value.startswith("="):
-        return Translator(value, origin=source.coordinate).translate_formula(target.coordinate)
-    return value
 
 
 def _copy_cell_style(source: Cell, target: Cell) -> None:
