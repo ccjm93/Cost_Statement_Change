@@ -138,13 +138,14 @@ def process_workbook(
             if row in data_row_set:
                 # 변경 행 수식: 다른 시트 참조는 당초 행과 동일하게 두고,
                 # 같은 시트에서 당초 행을 가리키는 참조만 한 행 아래(변경 행)로 옮긴다.
-                # (금액 열은 아래에서 재설정)
                 worksheet.cell(target_row + 1, target_col).value = _shift_change_row_formula(
                     rewritten, original_positions
                 )
 
         for row_idx in processed_original_rows:
-            _set_amount_formula(worksheet, row_idx + 1, shifted_columns)
+            amount_value = worksheet.cell(row_idx, shifted_columns["amount"]).value
+            if _amount_formula_needs_reset(amount_value):
+                _set_amount_formula(worksheet, row_idx + 1, shifted_columns)
 
         _rewrite_cross_sheet_references(workbook, sheet_name, ref_mapper)
 
@@ -252,7 +253,11 @@ def validate_workbook(
         if not _row_has_red_font(worksheet, change_row_idx):
             errors.append(f"{change_row_idx}행 빨간 글자 서식 누락")
 
-        expected = _amount_formula(change_row_idx, columns)
+        amount_value = worksheet.cell(row_idx, columns["amount"]).value
+        if _amount_formula_needs_reset(amount_value):
+            expected = _amount_formula(change_row_idx, columns)
+        else:
+            expected = _shift_change_row_formula(amount_value, original_positions)
         if worksheet.cell(change_row_idx, columns["amount"]).value != expected:
             errors.append(f"{change_row_idx}행 금액 수식 오류")
 
@@ -559,6 +564,11 @@ def _row_has_red_font(worksheet, row_idx: int) -> bool:
         if color is None or color.type != "rgb" or color.rgb != RED_RGB:
             return False
     return True
+
+
+def _amount_formula_needs_reset(formula) -> bool:
+    """당초 금액 수식이 다른 시트를 참조할 때만 변경 행 금액 수식을 노무비+재료비+경비로 재설정한다."""
+    return isinstance(formula, str) and bool(_SHEET_REF_RE.search(formula))
 
 
 def _set_amount_formula(worksheet, row_idx: int, columns: dict[str, int]) -> None:

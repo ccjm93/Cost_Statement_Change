@@ -40,12 +40,14 @@ class ProcessorTest(unittest.TestCase):
                 self.assertEqual(ws["B7"].value, ORIGINAL_LABEL)
                 self.assertEqual(ws["B8"].value, CHANGED_LABEL)
                 self.assertEqual(ws["F3"].value, "=C3+D3+E3")
-                self.assertEqual(ws["F5"].value, "=C5+D5+E5")
+                self.assertEqual(ws["F5"].value, "=참조!B1*3")
                 self.assertEqual(ws["C7"].value, "=SUM(C3,C5)")
                 self.assertEqual(ws["F7"].value, "=SUM(F3,F5)")
+                # 변경 행 금액: 같은 시트 참조만 있으면 당초 행 참조를 변경 행 참조로 옮긴다.
                 self.assertEqual(ws["F4"].value, "=C4+D4+E4")
+                self.assertEqual(ws["F8"].value, "=SUM(F4,F6)")
+                # 변경 행 금액: 당초 수식이 다른 시트를 참조하면 노무비+재료비+경비로 재설정한다.
                 self.assertEqual(ws["F6"].value, "=C6+D6+E6")
-                self.assertEqual(ws["F8"].value, "=C8+D8+E8")
                 # 변경 행: 같은 시트에서 당초 행을 가리키는 참조는 한 행 아래(변경 행)로 옮긴다.
                 self.assertEqual(ws["C8"].value, "=SUM(C4,C6)")
                 self.assertEqual(ws["D8"].value, "=SUM(D4,D6)")
@@ -106,6 +108,7 @@ class ProcessorTest(unittest.TestCase):
         ws.append(["터파기", 100, 200, 30, "=B3+C3+D3", ""])
         ws.append(["되메우기", 120, 220, 40, "=B4+C4+D4", ""])
         ws.append(["소계", "=SUM(B3:B4)", "=SUM(C3:C4)", "=SUM(D3:D4)", "=SUM(E3:E4)", ""])
+        ws["E4"] = "=참조!B1*3"  # 금액 열의 다른 시트 참조 수식
         ws["F3"] = "=참조!B1"  # 데이터 행의 다른 시트 참조 수식
         ws["F6"] = "=E5"  # 데이터 행 밖의 수식 (금액 열 수식 없음)
         ref_sheet = wb.create_sheet("참조")
